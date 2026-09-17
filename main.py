@@ -10,6 +10,8 @@
                          (수동 테스트/디버깅용, Claude 호출 없음).
 - GET  /downloads/{f} : 생성된 PPT 파일 다운로드 (추측 불가능한 UUID 파일명 + 일정 기간
                          후 자동 삭제로 보호. 클릭 한 번으로 받아야 하므로 API 키 불필요).
+- GET  /latest.pptx   : 가장 최근에 생성된 PPT (고정 URL). PC에서 이 주소를 북마크해두면
+                         매번 Telegram 링크를 열 필요 없이 항상 최신 결과를 받을 수 있음.
 """
 import os
 import shutil
@@ -78,7 +80,7 @@ def _cleanup_dir(path: Path) -> None:
 def _cleanup_old_downloads() -> None:
     cutoff = time.time() - RETENTION_DAYS * 86400
     for f in DOWNLOADS_DIR.glob("*.pptx"):
-        if f.stat().st_mtime < cutoff:
+        if f.name != "latest.pptx" and f.stat().st_mtime < cutoff:
             f.unlink(missing_ok=True)
 
 
@@ -105,10 +107,11 @@ def _process_webhook(date: str, attendees: list[dict]) -> None:
         finally:
             _cleanup_dir(work_dir)
 
-        link = f"{PUBLIC_BASE_URL}/downloads/{file_id}.pptx"
+        shutil.copyfile(output_path, DOWNLOADS_DIR / "latest.pptx")
+
         send_telegram_message(
-            f"[{date}] 평가서 생성 완료 ({len(records)}명)\n{link}\n"
-            f"(파일은 {RETENTION_DAYS}일 후 자동 삭제됩니다)"
+            f"[{date}] 평가서 생성 완료 ({len(records)}명)\n"
+            f"PC에서 확인: {PUBLIC_BASE_URL}/latest.pptx"
         )
     except Exception as e:
         print(f"[webhook 처리 실패] {e}")
@@ -151,6 +154,18 @@ def fill_ppt(body: FillRequest, x_api_key: str | None = Header(default=None)):
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         filename="평가서.pptx",
         background=BackgroundTask(_cleanup_dir, work_dir),
+    )
+
+
+@app.get("/latest.pptx")
+def latest():
+    path = DOWNLOADS_DIR / "latest.pptx"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="아직 생성된 파일이 없습니다.")
+    return FileResponse(
+        path=path,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        filename="평가서_최신.pptx",
     )
 
 
