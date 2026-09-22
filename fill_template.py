@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-템플릿(Template.pptx)에 학생 이름+내용 데이터를 자동으로 채워 넣는 스크립트.
-- 슬라이드 1장당 12개(표 4개 x 3칸)까지 채움
-- 12개 초과 시 슬라이드를 자동으로 복제하여 다음 페이지에 이어서 채움
-- 12개 미만이면 남은 칸은 빈칸으로 둠 ({{이름}}/{{내용}} 마커만 제거)
+템플릿(Template.pptx / Template2.pptx)에 학생 이름+내용 데이터를 자동으로 채워 넣는 스크립트.
+- 슬라이드 1장당 (표 개수 x 3칸)까지 채움. Template.pptx는 표 4개라 12명,
+  Template2.pptx는 표 3개라 9명.
+- 수용 인원을 초과하면 슬라이드를 자동으로 복제하여 다음 페이지에 이어서 채움
+- 모자라면 남은 칸은 빈칸으로 둠 ({{이름}}/{{내용}} 마커만 제거)
 """
 import os
 import re
@@ -14,18 +15,29 @@ import subprocess
 from pathlib import Path
 from pptx import Presentation
 
-PER_SLIDE = 12  # 표 4개 x 3칸
-
-# 슬라이드 안에서 데이터를 채울 순서: (표 이름, 시작 열번호)
-SLOT_ORDER = [
-    ("표 1", 0), ("표 1", 7), ("표 1", 14),
-    ("표 6", 0), ("표 6", 7), ("표 6", 14),
-    ("표 8", 0), ("표 8", 7), ("표 8", 14),
-    ("표 10", 0), ("표 10", 7), ("표 10", 14),
-]
+# 표 하나 안에서 데이터를 채울 시작 열번호 (두 템플릿 모두 동일)
+COL_STARTS = (0, 7, 14)
 
 NAME_ROW = 0
 CONTENT_ROW = 3
+
+
+def slot_order(slide):
+    """슬라이드에서 (표, 시작 열번호) 슬롯 목록을 채울 순서대로 반환.
+
+    표 이름(예: '표 1')은 템플릿마다 다르고 PowerPoint에서 재저장하면 바뀌기도 하므로
+    이름 대신 화면상 위치(위 -> 아래, 왼쪽 -> 오른쪽)로 순서를 정한다.
+    """
+    tables = sorted(
+        (shape for shape in slide.shapes if shape.has_table),
+        key=lambda shape: (shape.top, shape.left),
+    )
+    return [(shape.table, col) for shape in tables for col in COL_STARTS]
+
+
+def slots_per_slide(template_path):
+    """템플릿 첫 슬라이드가 수용하는 인원 수."""
+    return len(slot_order(Presentation(template_path).slides[0]))
 
 
 def parse_records(raw_text):
@@ -67,16 +79,11 @@ def set_cell_text(cell, new_text):
 
 
 def fill_slide(slide, records_chunk):
-    """records_chunk: 최대 12개의 dict({'name':..,'content':..}) 또는 None(빈칸)"""
-    tables = {}
-    for shape in slide.shapes:
-        if shape.has_table:
-            tables[shape.name] = shape.table
+    """records_chunk: 슬라이드 수용 인원 이하의 dict({'name':..,'content':..}) 목록"""
+    slots = slot_order(slide)
+    padded = list(records_chunk) + [None] * (len(slots) - len(records_chunk))
 
-    padded = list(records_chunk) + [None] * (PER_SLIDE - len(records_chunk))
-
-    for (table_name, col_start), record in zip(SLOT_ORDER, padded):
-        table = tables[table_name]
+    for (table, col_start), record in zip(slots, padded):
         name_cell = table.cell(NAME_ROW, col_start)
         content_cell = table.cell(CONTENT_ROW, col_start)
         if record is None:
@@ -97,7 +104,8 @@ def build_pptx(template_path, records, output_path, scripts_dir=None, work_dir=N
     work_dir = Path(work_dir) if work_dir else Path(output_path).parent
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    n_slides_needed = max(1, -(-len(records) // PER_SLIDE))  # ceil division
+    per_slide = slots_per_slide(template_path)
+    n_slides_needed = max(1, -(-len(records) // per_slide))  # ceil division
 
     # 1) 필요한 만큼 슬라이드 복제 (템플릿은 slide1.xml 한 장짜리)
     work_path = work_dir / "_work.pptx"
@@ -114,7 +122,7 @@ def build_pptx(template_path, records, output_path, scripts_dir=None, work_dir=N
 
     # 2) 각 슬라이드에 데이터 채우기
     prs = Presentation(work_path)
-    chunks = [records[i:i + PER_SLIDE] for i in range(0, len(records), PER_SLIDE)]
+    chunks = [records[i:i + per_slide] for i in range(0, len(records), per_slide)]
     if not chunks:
         chunks = [[]]
     for slide, chunk in zip(prs.slides, chunks):

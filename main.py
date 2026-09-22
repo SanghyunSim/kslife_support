@@ -31,7 +31,10 @@ from fill_template import build_pptx
 from telegram_client import send_telegram_error, send_telegram_message
 
 BASE_DIR = Path(__file__).parent
-TEMPLATE_PATH = BASE_DIR / "Template.pptx"
+# 인원 수에 따라 템플릿을 고른다. Template2는 한 장에 표 3개(9명), Template은 표 4개(12명).
+TEMPLATE_SMALL = BASE_DIR / "Template2.pptx"
+TEMPLATE_LARGE = BASE_DIR / "Template.pptx"
+SMALL_TEMPLATE_MAX = 9
 SCRIPTS_DIR = BASE_DIR / "pptx_scripts"
 DOWNLOADS_DIR = BASE_DIR / "downloads"
 DOWNLOADS_DIR.mkdir(exist_ok=True)
@@ -73,6 +76,11 @@ def _require_api_key(x_api_key: str | None) -> None:
         raise HTTPException(status_code=401, detail="유효하지 않은 API 키입니다.")
 
 
+def _pick_template(n_records: int) -> Path:
+    """9명까지는 Template2.pptx, 10명부터는 Template.pptx."""
+    return TEMPLATE_SMALL if n_records <= SMALL_TEMPLATE_MAX else TEMPLATE_LARGE
+
+
 def _cleanup_dir(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
@@ -98,7 +106,7 @@ def _process_webhook(date: str, attendees: list[dict]) -> None:
         work_dir = Path(tempfile.mkdtemp(prefix="pptx_wh_"))
         try:
             build_pptx(
-                template_path=str(TEMPLATE_PATH),
+                template_path=str(_pick_template(len(records))),
                 records=records,
                 output_path=str(output_path),
                 scripts_dir=str(SCRIPTS_DIR),
@@ -130,8 +138,9 @@ def webhook(body: WebhookRequest, background_tasks: BackgroundTasks, x_api_key: 
 def fill_ppt(body: FillRequest, x_api_key: str | None = Header(default=None)):
     _require_api_key(x_api_key)
 
-    if not TEMPLATE_PATH.exists():
-        raise HTTPException(status_code=500, detail="Template.pptx를 찾을 수 없습니다.")
+    template_path = _pick_template(len(body.records))
+    if not template_path.exists():
+        raise HTTPException(status_code=500, detail=f"{template_path.name}을 찾을 수 없습니다.")
 
     work_dir = Path(tempfile.mkdtemp(prefix="pptx_req_"))
     output_path = work_dir / f"{uuid.uuid4().hex}.pptx"
@@ -139,7 +148,7 @@ def fill_ppt(body: FillRequest, x_api_key: str | None = Header(default=None)):
     try:
         records = [r.model_dump() for r in body.records]
         build_pptx(
-            template_path=str(TEMPLATE_PATH),
+            template_path=str(template_path),
             records=records,
             output_path=str(output_path),
             scripts_dir=str(SCRIPTS_DIR),
